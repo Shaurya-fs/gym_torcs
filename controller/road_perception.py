@@ -1,52 +1,54 @@
-"""
-This module converts raw TORCS sensor data intoma high level 
-description of the road ahead.
-
-Responsibilities (Version 1):
-- Receive raw track sensor data
-- Store road geometry information
-- Provide a clean interface for the rest of the controller
-
-NOTE:
-No steering, braking, gear selection or corner classification
-belongs in this module.
-"""
 from dataclasses import dataclass
-from typing import List 
+from typing import List
+from enum import Enum
+
+
+"""
+road_perception.py
+
+Converts raw TORCS track sensor data into a high-level description
+of the road ahead.
+
+This module only understands the road. It does not store vehicle state,
+classify corners, plan speed, steer, brake, or change gears.
+"""
+class RoadDirection(Enum):
+    STRAIGHT = "STRAIGHT"
+    LEFT = "LEFT"
+    RIGHT = "RIGHT"
+    UNKNOWN = "UNKNOWN"
+
 
 @dataclass
 class RoadGeometry:
+    direction: RoadDirection = RoadDirection.UNKNOWN
+    curvature: float = 0.0
+    forward_visibility: float = 0.0
+    left_opening: float = 0.0
+    right_opening: float = 0.0
+    track_width: float = 0.0
 
-    direction: str="unknown"
-    curvature: float=0.0
-    forward_visibility: float=0.0
-    left_opening: float=0.0
-    right_opening: float=0.0
-    track_width: float=0.0
-    confidence: float=0.0
+
 
 class RoadPerception:
-
     """
     Converts raw TORCS sensor readings into RoadGeometry.
     """
 
     def __init__(self):
-
         self.geometry = RoadGeometry()
 
-    def update(
-        self,
-        track: List[float],
-        track_pos: float,
-        angle: float,
-        speed_x: float,
-        gear: int,
-        rpm: float,
-        steering_angle: float,):
+    def update(self, track: List[float], angle: float) -> RoadGeometry:
+        """
+        Update the road geometry using TORCS road sensors.
 
-  
-        self.geometry
-        self.vehicle_state
+        Parameters
+        ----------
+        track:
+            The 19 TORCS track sensor readings.
 
-        return self.geometry,self.vehicle_state
+        angle:
+            Car heading angle relative to the track axis.
+        """
+
+        return self.geometry
