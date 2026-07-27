@@ -35,6 +35,6 @@ class AutonomousAgent:
 
         return [
             command.steering,
-            command.throttle,
+            command.acceleration,
             command.gear,
         ]

@@ -80,7 +80,7 @@ class RacingController:
 
         return ControlCommand(
             steering=steering,
-            throttle=acceleration,
+            acceleration=acceleration,
             brake=brake,
             gear=gear,
         )

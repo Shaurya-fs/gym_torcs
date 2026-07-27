@@ -13,7 +13,8 @@ step = 0
 # Create TORCS environment
 env = TorcsEnv(
     vision=vision,
-    throttle=False
+    throttle=True,
+    gear_change=True
 )
 
 # Create my autonomous racing agent
