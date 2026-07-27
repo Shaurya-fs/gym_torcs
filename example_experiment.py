@@ -1,45 +1,65 @@
 from gym_torcs import TorcsEnv
-from sample_agent import Agent
+from autom_agent import AutonomousAgent
 import numpy as np
 
 vision = True
 episode_count = 10
 max_steps = 50
+
 reward = 0
 done = False
 step = 0
 
-# Generate a Torcs environment
-env = TorcsEnv(vision=vision, throttle=False)
+# Create TORCS environment
+env = TorcsEnv(
+    vision=vision,
+    throttle=False
+)
 
-agent = Agent(1)  # steering only
+# Create my autonomous racing agent
+agent = AutonomousAgent()
 
+print("===================================")
+print("Autonomous Racing Experiment Start")
+print("===================================")
 
-print("TORCS Experiment Start.")
-for i in range(episode_count):
-    print("Episode : " + str(i))
+for episode in range(episode_count):
 
-    if np.mod(i, 3) == 0:
-        # Sometimes you need to relaunch TORCS because of the memory leak error
-        ob = env.reset(relaunch=True)
+    print(f"\nEpisode {episode + 1}/{episode_count}")
+
+    if episode % 3 == 0:
+        observation = env.reset(relaunch=True)
     else:
-        ob = env.reset()
+        observation = env.reset()
 
-    total_reward = 0.
-    for j in range(max_steps):
-        action = agent.act(ob, reward, done, vision)
+    total_reward = 0
 
-        ob, reward, done, _ = env.step(action)
-        #print(ob)
-        total_reward += reward
+    for _ in range(max_steps):
 
-        step += 1
-        if done:
+        try:
+            action = agent.act(
+                observation,
+                reward,
+                done,
+                vision,
+            )
+
+            observation, reward, done, _ = env.step(action)
+
+            total_reward += reward
+            step += 1
+
+            if done:
+                break
+
+        except Exception as e:
+            print("\nController Error")
+            print(e)
             break
 
-    print("TOTAL REWARD @ " + str(i) +" -th Episode  :  " + str(total_reward))
-    print("Total Step: " + str(step))
-    print("")
+    print(f"Episode Reward : {total_reward}")
+    print(f"Total Steps    : {step}")
 
-env.end()  # This is for shutting down TORCS
-print("Finish.")
+env.end()
+
+print("\nExperiment Finished.")
