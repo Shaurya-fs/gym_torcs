@@ -11,7 +11,15 @@ class VehicleState:
     rpm: float = 0.0
 
 class VehiclePerception:
-    def update(self, track_pos: float, steering_angle: float, speed_x: float, gear: int, rpm: float, steering: float) -> VehicleState:
+    def update(
+        self,
+        track_pos: float,
+        steering_angle: float,
+        speed_x: float,
+        gear: int,
+        rpm: float,
+        steering: float,
+     ) -> VehicleState:
         return VehicleState(
             track_pos=track_pos,
             steering_angle=steering_angle,
@@ -19,4 +27,4 @@ class VehiclePerception:
             gear=gear,
             rpm=rpm,
             steering=steering,
-            )
+        )

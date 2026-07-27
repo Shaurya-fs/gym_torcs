@@ -1,4 +1,3 @@
-
 from .road_perception import RoadPerception, RoadGeometry 
 from .vehicle_state import VehicleState, VehiclePerception
 import math
@@ -13,11 +12,8 @@ class RacingController:
 
     CENTERING_GAIN = 0.50
 
-    UPSHIFT_TO_2 = 50.0
-    UPSHIFT_TO_3 = 80.0
-    UPSHIFT_TO_4 = 110.0
-    UPSHIFT_TO_5 = 140.0
-    UPSHIFT_TO_6 = 170.0
+    UPSHIFT_RPM = 7000
+    DOWNSHIFT_RPM = 2500
 
     def __init__(self):
         self.road_perception = RoadPerception()
@@ -78,7 +74,8 @@ class RacingController:
         )
 
         gear = self._calculate_gear(
-            speed_x=vehicle.speed_x,
+            rpm=vehicle.rpm,
+            current_gear=vehicle.gear,
         )
 
         return ControlCommand(
@@ -128,24 +125,13 @@ class RacingController:
 
         return acceleration, brake
 
-    def _calculate_gear(self, speed_x: float) -> int:
-        """
-        Simple automatic gear selection based on forward speed.
-        """
+    def _calculate_gear(self, rpm: float, current_gear: int) -> int:
+        """Automatic gear selection based on engine RPM."""
 
-        if speed_x > self.UPSHIFT_TO_6:
-            return 6
+        if rpm > self.UPSHIFT_RPM and current_gear < 6:
+            return current_gear + 1
 
-        if speed_x > self.UPSHIFT_TO_5:
-            return 5
+        if rpm < self.DOWNSHIFT_RPM and current_gear > 1:
+            return current_gear - 1
 
-        if speed_x > self.UPSHIFT_TO_4:
-            return 4
-
-        if speed_x > self.UPSHIFT_TO_3:
-            return 3
-
-        if speed_x > self.UPSHIFT_TO_2:
-            return 2
-
-        return 1
+        return current_gear

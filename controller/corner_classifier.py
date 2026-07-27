@@ -4,17 +4,7 @@ from .corner_profile import CornerProfile, CornerType
 
 
 class CornerClassifier:
-    """
-    Classifies the upcoming corner using processed road geometry
-    and current vehicle state.
-
-    Responsibilities:
-        1. Estimate turn angle.
-        2. Classify corner type.
-        3. Calculate severity.
-
-    This class NEVER performs vehicle control.
-    """
+ 
 
     # ---------------------------------------------------------
     # Corner classification thresholds (degrees)
