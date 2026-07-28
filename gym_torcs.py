@@ -1,4 +1,4 @@
-import gym
+
 from gym import spaces
 import numpy as np
 # from os import path
@@ -27,7 +27,15 @@ class TorcsEnv:
         self.initial_run = True
 
         ##print("launch torcs")
-        os.system('pkill torcs')
+        self.vision = vision
+        self.throttle = throttle
+
+        self.gear_change = gear_change
+
+        self.initial_run = True
+
+        print("Manual TORCS mode: start TORCS before running this program.")
+        """os.system('pkill torcs')
         time.sleep(0.5)
         if self.vision is True:
             os.system('torcs -nofuel -nodamage -nolaptime  -vision &')
@@ -36,6 +44,7 @@ class TorcsEnv:
         time.sleep(0.5)
         os.system('sh autostart.sh')
         time.sleep(0.5)
+        """
 
         """
         # Modify here if you use multiple tracks in the environment
@@ -201,7 +210,7 @@ class TorcsEnv:
         return self.observation
 
     def reset_torcs(self):
-       #print("relaunch torcs")
+       """#print("relaunch torcs")
         os.system('pkill torcs')
         time.sleep(0.5)
         if self.vision is True:
@@ -210,7 +219,8 @@ class TorcsEnv:
             os.system('torcs -nofuel -nodamage -nolaptime &')
         time.sleep(0.5)
         os.system('sh autostart.sh')
-        time.sleep(0.5)
+        time.sleep(0.5)"""
+       pass
 
     def agent_to_torcs(self, u):
         torcs_action = {'steer': u[0]}

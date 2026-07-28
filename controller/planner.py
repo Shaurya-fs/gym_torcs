@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from torcs.gym_torcs.controller.corner_profile import CornerProfile, CornerType
+from .corner_profile import CornerProfile, CornerType
 from .road_perception import RoadGeometry
 from .vehicle_state import VehicleState
 
