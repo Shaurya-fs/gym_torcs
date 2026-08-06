@@ -12,9 +12,16 @@ class DrivingPlan:
     The Controller converts this plan into low-level vehicle commands.
     """
     target_speed: float = 0.0
+    target_gear: int = 1
     steering_gain: float = 0.0
     brake_intensity: float = 0.0
     acceleration_limit: float = 0.0
+    brake_point: float = 0.0
+    turn_in_point: float = 0.0
+    apex: float = 0.0
+    exit_point: float = 0.0
+    target_track_pos: float = 0.0
+    trail_brake: float = 0.0
 
 
 class Planner:
@@ -62,41 +69,22 @@ class Planner:
         corner: CornerProfile,
     ) -> DrivingPlan:
 
-        if corner.corner_type == CornerType.STRAIGHT:
-            target_speed = self.STRAIGHT_SPEED
-            steering_gain = self.STRAIGHT_STEERING
-            brake_intensity = self.STRAIGHT_BRAKE
-            acceleration_limit = self.STRAIGHT_THROTTLE
+        plan_table = {
+            CornerType.STRAIGHT: (170.0, 6, 4.5, 0.00, 1.00),
+            CornerType.GENTLE_LEFT: (130.0, 5, 5.5, 0.10, 0.78),
+            CornerType.GENTLE_RIGHT: (130.0, 5, 5.5, 0.10, 0.78),
+            CornerType.MEDIUM_LEFT: (92.0, 4, 7.0, 0.45, 0.52),
+            CornerType.MEDIUM_RIGHT: (92.0, 4, 7.0, 0.45, 0.52),
+            CornerType.HAIRPIN_LEFT: (48.0, 2, 9.0, 0.80, 0.28),
+            CornerType.HAIRPIN_RIGHT: (48.0, 2, 9.0, 0.80, 0.28),
+            CornerType.CHICANE: (70.0, 3, 8.0, 0.58, 0.38),
+            CornerType.EXIT: (120.0, 4, 5.0, 0.05, 0.88),
+        }
 
-        elif corner.corner_type == CornerType.GENTLE:
-            target_speed = self.GENTLE_SPEED
-            steering_gain = self.GENTLE_STEERING
-            brake_intensity = self.GENTLE_BRAKE
-            acceleration_limit = self.GENTLE_THROTTLE
-
-        elif corner.corner_type == CornerType.MEDIUM:
-            target_speed = self.MEDIUM_SPEED
-            steering_gain = self.MEDIUM_STEERING
-            brake_intensity = self.MEDIUM_BRAKE
-            acceleration_limit = self.MEDIUM_THROTTLE
-
-        elif corner.corner_type == CornerType.SHARP:
-            target_speed = self.SHARP_SPEED
-            steering_gain = self.SHARP_STEERING
-            brake_intensity = self.SHARP_BRAKE
-            acceleration_limit = self.SHARP_THROTTLE
-
-        elif corner.corner_type == CornerType.HAIRPIN:
-            target_speed = self.HAIRPIN_SPEED
-            steering_gain = self.HAIRPIN_STEERING
-            brake_intensity = self.HAIRPIN_BRAKE
-            acceleration_limit = self.HAIRPIN_THROTTLE
-
-        else:
-            target_speed = self.DEFAULT_SPEED
-            steering_gain = self.DEFAULT_STEERING
-            brake_intensity = self.DEFAULT_BRAKE
-            acceleration_limit = self.DEFAULT_THROTTLE
+        target_speed, target_gear, steering_gain, brake_intensity, acceleration_limit = plan_table.get(
+            corner.corner_type,
+            (self.DEFAULT_SPEED, 3, self.DEFAULT_STEERING, self.DEFAULT_BRAKE, self.DEFAULT_THROTTLE),
+        )
 
         # -----------------------------------------------------
         # Apply severity adjustment to ALL corner types
@@ -109,10 +97,45 @@ class Planner:
 
         brake_intensity = max(0.0, min(1.0, brake_intensity))
         acceleration_limit = max(0.0, min(1.0, acceleration_limit))
+        signed_curvature = road.signed_curvature
+
+        if signed_curvature > 0.04:
+            entry_position = 0.55
+            apex = -0.45
+            exit_position = 0.35
+        elif signed_curvature < -0.04:
+            entry_position = -0.55
+            apex = 0.45
+            exit_position = -0.35
+        else:
+            entry_position = 0.0
+            apex = 0.0
+            exit_position = 0.0
+
+        if corner.corner_type == CornerType.EXIT:
+            target_track_pos = exit_position
+            brake_intensity *= 0.25
+            acceleration_limit = max(acceleration_limit, 0.75)
+        elif corner.corner_type == CornerType.CHICANE:
+            target_track_pos = entry_position * 0.45
+            acceleration_limit = min(acceleration_limit, 0.42)
+        else:
+            target_track_pos = entry_position
+
+        brake_point = max(18.0, vehicle.speed_x * (0.32 + 0.42 * severity))
+        turn_in_point = max(8.0, brake_point * 0.45)
+        trail_brake = brake_intensity * (0.55 if abs(signed_curvature) > 0.08 else 0.15)
 
         return DrivingPlan(
             target_speed=target_speed,
+            target_gear=target_gear,
             steering_gain=steering_gain,
             brake_intensity=brake_intensity,
             acceleration_limit=acceleration_limit,
+            brake_point=brake_point,
+            turn_in_point=turn_in_point,
+            apex=apex,
+            exit_point=exit_position,
+            target_track_pos=max(-0.8, min(0.8, target_track_pos)),
+            trail_brake=max(0.0, min(1.0, trail_brake)),
         )

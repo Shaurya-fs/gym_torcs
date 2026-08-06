@@ -1,10 +1,12 @@
+import traceback
+
 from gym_torcs import TorcsEnv
 from autom_agent import AutonomousAgent
 import numpy as np
 
-vision = True
-episode_count = 10
-max_steps = 50
+vision = False
+episode_count = 1
+max_steps = 1000
 
 reward = 0
 done = False
@@ -14,7 +16,7 @@ step = 0
 env = TorcsEnv(
     vision=vision,
     throttle=True,
-    gear_change=True
+    gear_change=True,
 )
 
 # Create my autonomous racing agent
@@ -28,10 +30,12 @@ for episode in range(episode_count):
 
     print(f"\nEpisode {episode + 1}/{episode_count}")
 
-    if episode % 3 == 0:
-        observation = env.reset(relaunch=True)
-    else:
+    try:
         observation = env.reset()
+    except ConnectionError as e:
+        print("\nTORCS Connection Error")
+        traceback.print_exc()
+        break
 
     total_reward = 0
 

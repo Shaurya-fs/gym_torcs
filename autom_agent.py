@@ -8,6 +8,12 @@ from controller.controller import RacingController
 from controller.control_command import ControlCommand
 
 
+class ActionWithTelemetry(list):
+    def __init__(self, values, telemetry_context=None):
+        super().__init__(values)
+        self.telemetry_context = telemetry_context or {}
+
+
 class AutonomousAgent:
     def __init__(self):
         self.controller = RacingController()
@@ -21,9 +27,16 @@ class AutonomousAgent:
             "angle": ob.angle,
             "trackPos": ob.trackPos,
             "speedX": ob.speedX,
+            "speedY": ob.speedY,
+            "speedZ": ob.speedZ,
             "rpm": ob.rpm,
-            # Gym observation does not expose gear. Use the previously commanded gear.
-            "gear": self.previous_command.gear,
+            "wheelSpinVel": ob.wheelSpinVel,
+            "gear": ob.gear,
+            "fuel": ob.fuel,
+            "damage": ob.damage,
+            "curLapTime": getattr(ob, "curLapTime", 0.0),
+            "distFromStart": getattr(ob, "distFromStart", 0.0),
+            "distRaced": getattr(ob, "distRaced", 0.0),
         }
 
         command = self.controller.update(
@@ -33,8 +46,12 @@ class AutonomousAgent:
 
         self.previous_command = command
 
-        return [
-            command.steering,
-            command.acceleration,
-            command.gear,
-        ]
+        return ActionWithTelemetry(
+            [
+                command.steering,
+                command.acceleration,
+                command.brake,
+                command.gear,
+            ],
+            telemetry_context=self.controller.last_telemetry_context,
+        )

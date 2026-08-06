@@ -58,6 +58,8 @@ import sys
 import getopt
 import os
 import time
+import math
+from controller.diagnostics import DEBUG
 PI= 3.14159265359
 
 data_size = 2**17
@@ -116,7 +118,18 @@ def bargraph(x,mn,mx,w,c='X'):
     return '[%s]' % (nnc+npc+ppc+pnc)
 
 class Client():
-    def __init__(self,H=None,p=None,i=None,e=None,t=None,s=None,d=None,vision=False):
+    def __init__(
+        self,
+        H=None,
+        p=None,
+        i=None,
+        e=None,
+        t=None,
+        s=None,
+        d=None,
+        vision=False,
+        max_connection_attempts=10,
+    ):
         # If you don't like the option defaults,  change them here.
         self.vision = vision
 
@@ -127,6 +140,8 @@ class Client():
         self.trackname= 'unknown'
         self.stage= 3 # 0=Warm-up, 1=Qualifying 2=Race, 3=unknown <Default=3>
         self.debug= False
+        self.trace_packets = os.environ.get("TORCS_TRACE_PACKETS", "1" if DEBUG else "0") != "0"
+        self.max_connection_attempts = max_connection_attempts
         self.maxSteps= 100000  # 50steps/second
         self.parse_the_command_line()
         if H: self.host= H
@@ -145,12 +160,11 @@ class Client():
         try:
             self.so= socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         except socket.error as emsg:
-            print('Error: Could not create socket...')
-            sys.exit(-1)
+            raise ConnectionError("Could not create UDP socket: %s" % emsg) from emsg
         # == Initialize Connection To Server ==
         self.so.settimeout(1)
 
-        n_fail = 5
+        attempts = 0
         while True:
             # This string establishes track sensor angles! You can customize them.
             #a= "-90 -75 -60 -45 -30 -20 -15 -10 -5 0 5 10 15 20 30 45 60 75 90"
@@ -162,27 +176,35 @@ class Client():
             try:
                 self.so.sendto(initmsg.encode(), (self.host, self.port))
             except socket.error as emsg:
-                sys.exit(-1)
+                self.so.close()
+                self.so = None
+                raise ConnectionError(
+                    "Could not send the TORCS init message to %s:%d: %s"
+                    % (self.host, self.port, emsg)
+                ) from emsg
             sockdata= str()
             try:
                 sockdata,addr= self.so.recvfrom(data_size)
                 sockdata = sockdata.decode('utf-8')
             except socket.error as emsg:
+                attempts += 1
                 print("Waiting for server on %d............" % self.port)
-                print("Count Down : " + str(n_fail))
-                if n_fail < 0:
-                    print("relaunch torcs")
-                    os.system('pkill torcs')
-                    time.sleep(1.0)
-                    if self.vision is False:
-                        os.system('torcs -nofuel -nodamage -nolaptime &')
-                    else:
-                        os.system('torcs -nofuel -nodamage -nolaptime -vision &')
-
-                    time.sleep(1.0)
-                    os.system('sh autostart.sh')
-                    n_fail = 5
-                n_fail -= 1
+                print("Attempt : %d/%d" % (attempts, self.max_connection_attempts))
+                if attempts >= self.max_connection_attempts:
+                    self.so.close()
+                    self.so = None
+                    raise ConnectionError(
+                        "Could not connect to the TORCS SCR server on "
+                        "%s:%d after %d attempts. Start TORCS first, open "
+                        "Practice or Quick Race with the scr_server 1 driver, "
+                        "and make sure it is listening on this host and port. "
+                        "The first SCR server normally listens on port 3001; "
+                        "scr_server 2 listens on 3002, and so on. Automatic "
+                        "Linux startup with 'torcs' and 'xte' is disabled "
+                        "because those commands are not available on this "
+                        "machine."
+                        % (self.host, self.port, self.max_connection_attempts)
+                    )
 
             identify = '***identified***'
             if identify in sockdata:
@@ -271,10 +293,11 @@ class Client():
         if not self.so: return
         try:
             message = repr(self.R)
+            if self.trace_packets:
+                print("TORCS_PACKET:", message)
             self.so.sendto(message.encode(), (self.host, self.port))
         except socket.error as emsg:
-            print("Error sending to server: %s Message %s" % (emsg[1],str(emsg[0])))
-            sys.exit(-1)
+            raise ConnectionError("Error sending to server: %s" % emsg) from emsg
         if self.debug: print(self.R.fancyout())
         # Or use this for plain output:
         #if self.debug: print self.R
@@ -415,9 +438,9 @@ class ServerState():
                 elif k == 'angle':
                     asyms= [
                           "  !  ", ".|'  ", "./'  ", "_.-  ", ".--  ", "..-  ",
-                          "---  ", ".__  ", "-._  ", "'-.  ", "'\.  ", "'|.  ",
+                          "---  ", ".__  ", "-._  ", "'-.  ", "'\\.  ", "'|.  ",
                           "  |  ", "  .|'", "  ./'", "  .-'", "  _.-", "  __.",
-                          "  ---", "  --.", "  -._", "  -..", "  '\.", "  '|."  ]
+                          "  ---", "  --.", "  -._", "  -..", "  '\\.", "  '|."  ]
                     rad= self.d[k]
                     deg= int(rad*180/PI)
                     symno= int(.5+ (rad+PI) / (PI/12) )
@@ -447,16 +470,17 @@ class DriverAction():
     (accel 1)(brake 0)(gear 1)(steer 0)(clutch 0)(focus 0)(meta 0) or
     (accel 1)(brake 0)(gear 1)(steer 0)(clutch 0)(focus -90 -45 0 45 90)(meta 0)'''
     def __init__(self):
-       self.actionstr= str()
-       # "d" is for data dictionary.
-       self.d= { 'accel':0.2,
-                   'brake':0,
-                  'clutch':0,
-                    'gear':1,
-                   'steer':0,
-                   'focus':[-90,-45,0,45,90],
-                    'meta':0
-                    }
+        self.actionstr = str()
+            # "d" is for data dictionary.
+        self.d = {
+                'accel': 0.2,
+                'brake': 0,
+                'gear': 1,
+                'steer': 0,
+                'clutch': 0,
+                'focus': [-90, -45, 0, 45, 90],
+                'meta': 0
+            }
 
     def clip_to_limits(self):
         """There pretty much is never a reason to send the server
@@ -466,10 +490,12 @@ class DriverAction():
         utility function, but it should be used only for non standard
         things or non obvious limits (limit the steering to the left,
         for example). For normal limits, simply don't worry about it."""
-        self.d['steer']= clip(self.d['steer'], -1, 1)
-        self.d['brake']= clip(self.d['brake'], 0, 1)
-        self.d['accel']= clip(self.d['accel'], 0, 1)
-        self.d['clutch']= clip(self.d['clutch'], 0, 1)
+        self.d['steer']= clip(finite_number(self.d['steer'], 0.0), -1, 1)
+        self.d['brake']= clip(finite_number(self.d['brake'], 0.0), 0, 1)
+        self.d['accel']= clip(finite_number(self.d['accel'], 0.0), 0, 1)
+        self.d['clutch']= clip(finite_number(self.d['clutch'], 0.0), 0, 1)
+        self.d['gear']= int(finite_number(self.d['gear'], 0))
+        self.d['meta']= int(finite_number(self.d['meta'], 0))
         if self.d['gear'] not in [-1, 0, 1, 2, 3, 4, 5, 6]:
             self.d['gear']= 0
         if self.d['meta'] not in [0,1]:
@@ -510,6 +536,15 @@ class DriverAction():
         return out
 
 # == Misc Utility Functions
+def finite_number(value, default):
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(value):
+        return default
+    return value
+
 def destringify(s):
     '''makes a string into a value or a list of strings into a list of
     values (if possible)'''

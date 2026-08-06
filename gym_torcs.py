@@ -1,13 +1,19 @@
-
-from gym import spaces
+from gymnasium import spaces
 import numpy as np
 # from os import path
 import snakeoil3_gym as snakeoil3
-import numpy as np
 import copy
+import csv
 import collections as col
 import os
 import time
+from controller.diagnostics import (
+    compact_frame_report,
+    now_timestamp,
+    print_warnings,
+    validate_command,
+    validate_sensor_frame,
+)
 
 
 class TorcsEnv:
@@ -18,23 +24,39 @@ class TorcsEnv:
     initial_reset = True
 
 
-    def __init__(self, vision=False, throttle=False, gear_change=False):
+    def __init__(
+        self,
+        vision=False,
+        throttle=False,
+        gear_change=False,
+        host="localhost",
+        port=3001,
+        connection_attempts=10,
+    ):
        #print("Init")
         self.vision = vision
         self.throttle = throttle
         self.gear_change = gear_change
+        self.host = host
+        self.port = port
+        self.connection_attempts = connection_attempts
+        self.telemetry_path = os.path.join(os.getcwd(), "controller_telemetry.csv")
+        self.telemetry_header_written = os.path.exists(self.telemetry_path)
 
         self.initial_run = True
 
         ##print("launch torcs")
-        self.vision = vision
+        """self.vision = vision
         self.throttle = throttle
 
         self.gear_change = gear_change
 
-        self.initial_run = True
+        self.initial_run = True"""
 
-        print("Manual TORCS mode: start TORCS before running this program.")
+        print(
+            "Manual TORCS mode: start TORCS with scr_server 1 before running "
+            "this program. The default UDP port is 3001."
+        )
         """os.system('pkill torcs')
         time.sleep(0.5)
         if self.vision is True:
@@ -48,7 +70,12 @@ class TorcsEnv:
 
         """
         # Modify here if you use multiple tracks in the environment
-        self.client = snakeoil3.Client(p=3101, vision=self.vision)  # Open new UDP in vtorcs
+            self.client = snakeoil3.Client(
+                H=self.host,
+                p=self.port,
+                vision=self.vision,
+                max_connection_attempts=self.connection_attempts,
+            )  # Open new UDP in vtorcs
         self.client.MAX_STEPS = np.inf
 
         client = self.client
@@ -58,17 +85,23 @@ class TorcsEnv:
         """
         if throttle is False:
             self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(1,))
+        elif gear_change is True:
+            self.action_space = spaces.Box(
+                low=np.array([-1.0, 0.0, 0.0, -1.0], dtype=np.float32),
+                high=np.array([1.0, 1.0, 1.0, 6.0], dtype=np.float32),
+                dtype=np.float32,
+            )
         else:
             self.action_space = spaces.Box(low=-1.0, high=1.0, shape=(2,))
 
         if vision is False:
-            high = np.array([1., np.inf, np.inf, np.inf, 1., np.inf, 1., np.inf])
-            low = np.array([0., -np.inf, -np.inf, -np.inf, 0., -np.inf, 0., -np.inf])
-            self.observation_space = spaces.Box(low=low, high=high)
+            high = np.array([1., np.inf, np.inf, np.inf, 1., np.inf, 1., np.inf], dtype=np.float32)
+            low = np.array([0., -np.inf, -np.inf, -np.inf, 0., -np.inf, 0., -np.inf], dtype=np.float32)
+            self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         else:
-            high = np.array([1., np.inf, np.inf, np.inf, 1., np.inf, 1., np.inf, 255])
-            low = np.array([0., -np.inf, -np.inf, -np.inf, 0., -np.inf, 0., -np.inf, 0])
-            self.observation_space = spaces.Box(low=low, high=high)
+            high = np.array([1., np.inf, np.inf, np.inf, 1., np.inf, 1., np.inf, 255], dtype=np.float32)
+            low = np.array([0., -np.inf, -np.inf, -np.inf, 0., -np.inf, 0., -np.inf, 0], dtype=np.float32)
+            self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
     def step(self, u):
        #print("Step")
@@ -102,11 +135,11 @@ class TorcsEnv:
                (client.S.d['wheelSpinVel'][0]+client.S.d['wheelSpinVel'][1]) > 5):
                 action_torcs['accel'] -= .2
         else:
-            action_torcs['accel'] = this_action['accel']
-
+           action_torcs['accel'] = max(0.0, min(1.0, float(this_action['accel'])))
+           action_torcs['brake'] = max(0.0, min(1.0, float(this_action.get('brake', 0.0))))
         #  Automatic Gear Change by Snakeoil
-        if self.gear_change is True:
-            action_torcs['gear'] = this_action['gear']
+        if self.gear_change :
+            action_torcs['gear'] = int(this_action.get('gear', client.S.d['gear']))
         else:
             #  Automatic Gear Change by Snakeoil is possible
             action_torcs['gear'] = 1
@@ -125,10 +158,13 @@ class TorcsEnv:
 
         # Save the privious full-obs from torcs for the reward calculation
         obs_pre = copy.deepcopy(client.S.d)
+        print_warnings(validate_command(action_torcs, "packet.pre_send"))
 
         # One-Step Dynamics Update #################################
         # Apply the Agent's action into torcs
         client.respond_to_server()
+        packet_values = copy.deepcopy(client.R.d)
+        print_warnings(validate_command(packet_values, "packet.final"))
         # Get the response of TORCS
         client.get_servers_input()
 
@@ -171,6 +207,9 @@ class TorcsEnv:
             client.respond_to_server()
 
         self.time_step += 1
+        telemetry_context = getattr(u, "telemetry_context", {})
+        self._write_telemetry(telemetry_context, packet_values)
+        compact_frame_report(telemetry_context, packet_values)
 
         return self.get_obs(), reward, client.R.d['meta'], {}
 
@@ -189,7 +228,12 @@ class TorcsEnv:
                 print("### TORCS is RELAUNCHED ###")
 
         # Modify here if you use multiple tracks in the environment
-        self.client = snakeoil3.Client(p=3101, vision=self.vision)  # Open new UDP in vtorcs
+        self.client = snakeoil3.Client(
+            H=self.host,
+            p=self.port,
+            vision=self.vision,
+            max_connection_attempts=self.connection_attempts,
+        )  # Open new UDP in vtorcs
         self.client.MAX_STEPS = np.inf
 
         client = self.client
@@ -204,7 +248,9 @@ class TorcsEnv:
         return self.get_obs()
 
     def end(self):
-        os.system('pkill torcs')
+        client = getattr(self, "client", None)
+        if client is not None:
+            client.shutdown()
 
     def get_obs(self):
         return self.observation
@@ -229,7 +275,11 @@ class TorcsEnv:
             torcs_action.update({'accel': u[1]})
 
         if self.gear_change is True: # gear change action is enabled
-            torcs_action.update({'gear': u[2]})
+            if len(u) >= 4:
+                torcs_action.update({'brake': u[2]})
+                torcs_action.update({'gear': u[3]})
+            else:
+                torcs_action.update({'gear': u[2]})
 
         return torcs_action
 
@@ -250,6 +300,7 @@ class TorcsEnv:
         return np.array(rgb, dtype=np.uint8)
 
     def make_observaton(self, raw_obs):
+        print_warnings(validate_sensor_frame(raw_obs, "raw_udp"))
 
         if self.vision is False:
 
@@ -263,22 +314,34 @@ class TorcsEnv:
                 'rpm',
                 'track',
                 'trackPos',
-                'wheelSpinVel'
+                'wheelSpinVel',
+                'gear',
+                'fuel',
+                'damage',
+                'curLapTime',
+                'distFromStart',
+                'distRaced'
             ]
 
             Observation = col.namedtuple('Observation', names)
 
             return Observation(
                 focus=np.array(raw_obs['focus'], dtype=np.float32) / 200.,
-                speedX=np.array(raw_obs['speedX'], dtype=np.float32) / self.default_speed,
-                speedY=np.array(raw_obs['speedY'], dtype=np.float32) / self.default_speed,
-                speedZ=np.array(raw_obs['speedZ'], dtype=np.float32) / self.default_speed,
+                speedX=np.array(raw_obs['speedX'], dtype=np.float32),
+                speedY=np.array(raw_obs['speedY'], dtype=np.float32),
+                speedZ=np.array(raw_obs['speedZ'], dtype=np.float32),
                 angle=np.array(raw_obs['angle'], dtype=np.float32),
                 opponents=np.array(raw_obs['opponents'], dtype=np.float32) / 200.,
                 rpm=np.array(raw_obs['rpm'], dtype=np.float32),
-                track=np.array(raw_obs['track'], dtype=np.float32) / 200.,
+                track=np.array(raw_obs['track'], dtype=np.float32),
                 trackPos=np.array(raw_obs['trackPos'], dtype=np.float32),
-                wheelSpinVel=np.array(raw_obs['wheelSpinVel'], dtype=np.float32)
+                wheelSpinVel=np.array(raw_obs['wheelSpinVel'], dtype=np.float32),
+                gear=int(raw_obs['gear']),
+                fuel=np.array(raw_obs['fuel'], dtype=np.float32),
+                damage=np.array(raw_obs['damage'], dtype=np.float32),
+                curLapTime=np.array(raw_obs.get('curLapTime', 0.0), dtype=np.float32),
+                distFromStart=np.array(raw_obs.get('distFromStart', 0.0), dtype=np.float32),
+                distRaced=np.array(raw_obs.get('distRaced', 0.0), dtype=np.float32)
             )
 
         else:
@@ -294,6 +357,12 @@ class TorcsEnv:
                 'track',
                 'trackPos',
                 'wheelSpinVel',
+                'gear',
+                'fuel',
+                'damage',
+                'curLapTime',
+                'distFromStart',
+                'distRaced',
                 'img'
             ]
 
@@ -303,14 +372,93 @@ class TorcsEnv:
 
             return Observation(
                 focus=np.array(raw_obs['focus'], dtype=np.float32) / 200.,
-                speedX=np.array(raw_obs['speedX'], dtype=np.float32) / self.default_speed,
-                speedY=np.array(raw_obs['speedY'], dtype=np.float32) / self.default_speed,
-                speedZ=np.array(raw_obs['speedZ'], dtype=np.float32) / self.default_speed,
+                speedX=np.array(raw_obs['speedX'], dtype=np.float32),
+                speedY=np.array(raw_obs['speedY'], dtype=np.float32),
+                speedZ=np.array(raw_obs['speedZ'], dtype=np.float32),
                 angle=np.array(raw_obs['angle'], dtype=np.float32),
                 opponents=np.array(raw_obs['opponents'], dtype=np.float32) / 200.,
                 rpm=np.array(raw_obs['rpm'], dtype=np.float32),
-                track=np.array(raw_obs['track'], dtype=np.float32) / 200.,
+                track=np.array(raw_obs['track'], dtype=np.float32),
                 trackPos=np.array(raw_obs['trackPos'], dtype=np.float32),
                 wheelSpinVel=np.array(raw_obs['wheelSpinVel'], dtype=np.float32),
+                gear=int(raw_obs['gear']),
+                fuel=np.array(raw_obs['fuel'], dtype=np.float32),
+                damage=np.array(raw_obs['damage'], dtype=np.float32),
+                curLapTime=np.array(raw_obs.get('curLapTime', 0.0), dtype=np.float32),
+                distFromStart=np.array(raw_obs.get('distFromStart', 0.0), dtype=np.float32),
+                distRaced=np.array(raw_obs.get('distRaced', 0.0), dtype=np.float32),
                 img=image_rgb
             )
+
+    def _write_telemetry(self, context, packet_values):
+        if not context:
+            return
+
+        sensor = context.get("sensor_data", {})
+        vehicle = context.get("vehicle", {})
+        road = context.get("road", {})
+        corner = context.get("corner", {})
+        plan = context.get("plan", {})
+        command = context.get("command", {})
+        track = list(sensor.get("track", []))
+        while len(track) < 19:
+            track.append("")
+
+        headers = [
+            "timestamp", "frame", "lap", "lap_time_s", "dist_from_start_m", "dist_raced_m",
+            "speed_x_kmh", "speed_y_kmh", "speed_z_kmh", "rpm", "gear", "fuel_l",
+            "damage", "track_pos_norm", "angle_rad", "wheel_slip",
+            "corner_type", "road_visibility_m", "road_curvature_signed",
+            "planner_target_speed_kmh", "planner_target_gear", "planner_steering_gain",
+            "planner_target_track_pos", "planner_brake_point_m",
+            "controller_steering", "controller_throttle", "controller_brake", "controller_gear",
+            "recovery_active",
+            "packet_steer", "packet_accel", "packet_brake", "packet_gear", "packet_meta",
+        ] + [f"track_{idx:02d}_m" for idx in range(19)]
+
+        row = {
+            "timestamp": now_timestamp(),
+            "frame": context.get("frame", 0),
+            "lap": sensor.get("lap", 0),
+            "lap_time_s": sensor.get("curLapTime", 0.0),
+            "dist_from_start_m": sensor.get("distFromStart", 0.0),
+            "dist_raced_m": sensor.get("distRaced", 0.0),
+            "speed_x_kmh": vehicle.get("speed_x", sensor.get("speedX", 0.0)),
+            "speed_y_kmh": vehicle.get("speed_y", sensor.get("speedY", 0.0)),
+            "speed_z_kmh": vehicle.get("speed_z", sensor.get("speedZ", 0.0)),
+            "rpm": vehicle.get("rpm", sensor.get("rpm", 0.0)),
+            "gear": vehicle.get("gear", sensor.get("gear", 0)),
+            "fuel_l": sensor.get("fuel", 0.0),
+            "damage": sensor.get("damage", 0.0),
+            "track_pos_norm": vehicle.get("track_pos", sensor.get("trackPos", 0.0)),
+            "angle_rad": vehicle.get("steering_angle", sensor.get("angle", 0.0)),
+            "wheel_slip": vehicle.get("wheel_slip", 0.0),
+            "corner_type": corner.get("corner_type", ""),
+            "road_visibility_m": road.get("forward_visibility", 0.0),
+            "road_curvature_signed": road.get("signed_curvature", 0.0),
+            "planner_target_speed_kmh": plan.get("target_speed", 0.0),
+            "planner_target_gear": plan.get("target_gear", 0),
+            "planner_steering_gain": plan.get("steering_gain", 0.0),
+            "planner_target_track_pos": plan.get("target_track_pos", 0.0),
+            "planner_brake_point_m": plan.get("brake_point", 0.0),
+            "controller_steering": command.get("steering", 0.0),
+            "controller_throttle": command.get("acceleration", 0.0),
+            "controller_brake": command.get("brake", 0.0),
+            "controller_gear": command.get("gear", 0),
+            "recovery_active": context.get("recovery_active", False),
+            "packet_steer": packet_values.get("steer", 0.0),
+            "packet_accel": packet_values.get("accel", 0.0),
+            "packet_brake": packet_values.get("brake", 0.0),
+            "packet_gear": packet_values.get("gear", 0),
+            "packet_meta": packet_values.get("meta", 0),
+        }
+        for idx in range(19):
+            row[f"track_{idx:02d}_m"] = track[idx]
+
+        write_header = not self.telemetry_header_written
+        with open(self.telemetry_path, "a", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=headers)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+        self.telemetry_header_written = True

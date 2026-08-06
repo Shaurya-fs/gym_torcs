@@ -44,7 +44,7 @@ class CornerClassifier:
 
         angle = self._estimate_turn_angle(road)
 
-        corner = self._classify_corner_type(angle)
+        corner = self._classify_corner_type(angle, road)
 
         severity = self._calculate_severity(
             road,
@@ -56,6 +56,7 @@ class CornerClassifier:
             corner_type=corner,
             turn_angle=angle,
             severity=severity,
+            direction=road.direction.value,
         )
 
     # =========================================================
@@ -79,7 +80,7 @@ class CornerClassifier:
         # 1. Curvature contribution
         # -------------------------------------------------
 
-        angle += abs(road.curvature) * self.CURVATURE_WEIGHT
+        angle += abs(road.signed_curvature) * 220.0
 
         # -------------------------------------------------
         # 2. Visibility contribution
@@ -120,21 +121,25 @@ class CornerClassifier:
     def _classify_corner_type(
         self,
         angle: float,
+        road: RoadGeometry,
     ) -> CornerType:
 
-        if angle <= self.STRAIGHT_MAX:
+        if road.is_chicane:
+            return CornerType.CHICANE
+
+        if road.is_exit:
+            return CornerType.EXIT
+
+        if angle <= self.STRAIGHT_MAX or road.direction == RoadDirection.STRAIGHT:
             return CornerType.STRAIGHT
 
         if angle <= self.GENTLE_MAX:
-            return CornerType.GENTLE
+            return CornerType.GENTLE_LEFT if road.direction == RoadDirection.LEFT else CornerType.GENTLE_RIGHT
 
         if angle <= self.MEDIUM_MAX:
-            return CornerType.MEDIUM
+            return CornerType.MEDIUM_LEFT if road.direction == RoadDirection.LEFT else CornerType.MEDIUM_RIGHT
 
-        if angle <= self.SHARP_MAX:
-            return CornerType.SHARP
-
-        return CornerType.HAIRPIN
+        return CornerType.HAIRPIN_LEFT if road.direction == RoadDirection.LEFT else CornerType.HAIRPIN_RIGHT
 
     # =========================================================
 
@@ -165,10 +170,7 @@ class CornerClassifier:
 
         speed = abs(vehicle.speed_x)
 
-        speed_score = min(
-            speed / 150.0,
-            1.0,
-        )
+        speed_score = min(speed / 170.0, 1.0)
 
         severity += (
             speed_score
