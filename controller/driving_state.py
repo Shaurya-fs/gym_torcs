@@ -2,16 +2,28 @@ from enum import Enum, auto
 
 
 class DrivingState(Enum):
+    from enum import Enum, auto
+
+
+class DrivingState(Enum):
     START = auto()
+    # Straight
     FULL_THROTTLE = auto()
+    # Corner entry
     APPROACH_CORNER = auto()
     BRAKING = auto()
     TRAIL_BRAKE = auto()
     TURN_IN = auto()
+    # Corner
     MID_CORNER = auto()
+    # Exit
+    THROTTLE_APPLICATION = auto()
     CORNER_EXIT = auto()
+    # Emergency
     RECOVER = auto()
+    # Misc
     PIT = auto()
+    STOP = auto()
 
 
 class DrivingStateMachine:

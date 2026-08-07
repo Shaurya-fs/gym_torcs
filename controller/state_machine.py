@@ -4,33 +4,99 @@ from enum import Enum, auto
 class DrivingState(Enum):
     START = auto()
     FULL_THROTTLE = auto()
-    LIFT_OFF = auto()
+    LIFT = auto()
     BRAKING = auto()
+    TRAIL_BRAKE = auto()
     TURN_IN = auto()
-    MID_CORNER = auto()
+    APEX = auto()
     THROTTLE_APPLICATION = auto()
     CORNER_EXIT = auto()
     RECOVER = auto()
     PIT = auto()
+    FINISHED = auto()
+
+class PlannerEvent(Enum):
+    NONE = auto()
+    REACH_BRAKE_POINT = auto()
+    REACH_TURN_IN = auto()
+    REACH_APEX = auto()
+    REACH_EXIT = auto()
+    STRAIGHT = auto()
+    SPIN = auto()
+    PIT_REQUEST = auto()
+    FINISH = auto()
 
 
 class DrivingStateMachine:
-    VALID_TRANSITIONS = {
+       VALID_TRANSITIONS = {
         DrivingState.START: {DrivingState.FULL_THROTTLE},
-        DrivingState.FULL_THROTTLE: {DrivingState.LIFT_OFF},
-        DrivingState.LIFT_OFF: {DrivingState.BRAKING},
-        DrivingState.BRAKING: {DrivingState.TURN_IN},
-        DrivingState.TURN_IN: {DrivingState.MID_CORNER},
-        DrivingState.MID_CORNER: {DrivingState.THROTTLE_APPLICATION},
-        DrivingState.THROTTLE_APPLICATION: {DrivingState.CORNER_EXIT},
-        DrivingState.CORNER_EXIT: {DrivingState.FULL_THROTTLE},
-        DrivingState.RECOVER: {DrivingState.FULL_THROTTLE},
-        DrivingState.PIT: set(),
+
+        DrivingState.FULL_THROTTLE: {
+            DrivingState.LIFT,
+            DrivingState.RECOVER,
+            DrivingState.PIT,
+            DrivingState.FINISHED,
+        },
+
+        DrivingState.LIFT: {
+            DrivingState.BRAKING,
+            DrivingState.TURN_IN,
+            DrivingState.FULL_THROTTLE,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.BRAKING: {
+            DrivingState.TRAIL_BRAKE,
+            DrivingState.TURN_IN,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.TRAIL_BRAKE: {
+            DrivingState.TURN_IN,
+            DrivingState.APEX,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.TURN_IN: {
+            DrivingState.APEX,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.APEX: {
+            DrivingState.THROTTLE_APPLICATION,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.THROTTLE_APPLICATION: {
+            DrivingState.CORNER_EXIT,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.CORNER_EXIT: {
+            DrivingState.FULL_THROTTLE,
+            DrivingState.LIFT,
+            DrivingState.RECOVER,
+        },
+
+        DrivingState.RECOVER: {
+            DrivingState.FULL_THROTTLE,
+            DrivingState.PIT,
+        },
+
+        DrivingState.PIT: {
+            DrivingState.FINISHED,
+        },
+
+        DrivingState.FINISHED: set(),
     }
 
-    GLOBAL_TRANSITIONS = {DrivingState.RECOVER, DrivingState.PIT}
+GLOBAL_TRANSITIONS = {
+        DrivingState.RECOVER,
+        DrivingState.PIT,
+        DrivingState.FINISHED,
+    }
 
-    def __init__(self):
+def __init__(self):
         self.current_state = DrivingState.START
         self.previous_state = None
         self.time_in_state = 0
@@ -48,7 +114,7 @@ class DrivingStateMachine:
             DrivingState.PIT: self._transition_from_pit,
         }
 
-    def update(self, vehicle_state=None, planner=None):
+def update(self, vehicle_state=None, planner=None):
         self.time_in_state += 1
 
         global_transition = self._evaluate_global_transitions(vehicle_state, planner)
@@ -63,7 +129,7 @@ class DrivingStateMachine:
 
         return self.current_state
 
-    def change_state(self, new_state):
+def change_state(self, new_state):
         if not isinstance(new_state, DrivingState):
             raise TypeError("new_state must be a DrivingState")
 
@@ -86,66 +152,56 @@ class DrivingStateMachine:
         print(" ->")
         print(new_state.name)
 
-    def _is_valid_transition(self, new_state):
+def _is_valid_transition(self, new_state):
         if new_state in self.GLOBAL_TRANSITIONS:
             return True
 
         valid_next_states = self.VALID_TRANSITIONS[self.current_state]
         return new_state in valid_next_states
 
-    def _evaluate_global_transitions(self, vehicle_state, planner):
-        # TODO:
-        # Transition to RECOVER when validated recovery conditions are active.
-        #
-        # TODO:
-        # Transition to PIT when strategy or damage/fuel logic requests pit entry.
-        return None
-
-    def _transition_from_start(self, vehicle_state, planner):
-        # START has one legal next state. This initializes the normal driving loop.
+def _transition_from_start(self, vehicle_state, planner):
+        # Immediately begin the normal driving loop.
         return DrivingState.FULL_THROTTLE
 
-    def _transition_from_full_throttle(self, vehicle_state, planner):
-        # TODO:
-        # Transition to LIFT_OFF when planner indicates an approaching braking zone.
+def _transition_from_full_throttle(self, vehicle_state, planner):
+        if planner and planner.should_lift(vehicle_state):
+            return DrivingState.LIFT_OFF
         return None
 
-    def _transition_from_lift_off(self, vehicle_state, planner):
-        # TODO:
-        # Transition to BRAKING when planner indicates the braking point is reached.
+def _transition_from_lift_off(self, vehicle_state, planner):
+        if planner and planner.should_brake(vehicle_state):
+            return DrivingState.BRAKING
         return None
 
-    def _transition_from_braking(self, vehicle_state, planner):
-        # TODO:
-        # Transition to TURN_IN when target entry speed and turn-in point are reached.
+def _transition_from_braking(self, vehicle_state, planner):
+        if planner and planner.should_turn_in(vehicle_state):
+            return DrivingState.TURN_IN
         return None
 
-    def _transition_from_turn_in(self, vehicle_state, planner):
-        # TODO:
-        # Transition to MID_CORNER when the car is committed to the corner arc.
+def _transition_from_turn_in(self, vehicle_state, planner):
+        if planner and planner.in_mid_corner(vehicle_state):
+            return DrivingState.MID_CORNER
         return None
 
-    def _transition_from_mid_corner(self, vehicle_state, planner):
-        # TODO:
-        # Transition to THROTTLE_APPLICATION when apex or minimum-speed phase is reached.
+def _transition_from_mid_corner(self, vehicle_state, planner):
+        if planner and planner.should_apply_throttle(vehicle_state):
+            return DrivingState.THROTTLE_APPLICATION
         return None
 
-    def _transition_from_throttle_application(self, vehicle_state, planner):
-        # TODO:
-        # Transition to CORNER_EXIT when throttle can increase toward exit acceleration.
+def _transition_from_throttle_application(self, vehicle_state, planner):
+        if planner and planner.corner_exit_ready(vehicle_state):
+            return DrivingState.CORNER_EXIT
         return None
 
-    def _transition_from_corner_exit(self, vehicle_state, planner):
-        # TODO:
-        # Transition to FULL_THROTTLE when the car is stable and aligned for the next straight.
+def _transition_from_corner_exit(self, vehicle_state, planner):
+        if planner and planner.full_throttle_ready(vehicle_state):
+            return DrivingState.FULL_THROTTLE
         return None
 
-    def _transition_from_recover(self, vehicle_state, planner):
-        # TODO:
-        # Transition to FULL_THROTTLE when recovery is complete and normal driving is safe.
+def _transition_from_recover(self, vehicle_state, planner):
+        if planner and planner.recovery_complete(vehicle_state):
+            return DrivingState.FULL_THROTTLE
         return None
 
-    def _transition_from_pit(self, vehicle_state, planner):
-        # TODO:
-        # PIT is terminal for now. Add pit-exit transitions only after pit behavior exists.
+def _transition_from_pit(self, vehicle_state, planner):
         return None

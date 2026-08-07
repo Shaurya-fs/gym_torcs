@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-
 from .corner_profile import CornerProfile, CornerType
 from .road_perception import RoadGeometry
 from .vehicle_state import VehicleState
