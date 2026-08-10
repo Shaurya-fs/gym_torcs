@@ -61,6 +61,49 @@ class Planner:
     HAIRPIN_THROTTLE = 0.2
     DEFAULT_THROTTLE = 0.5
 
+        # -----------------------------------------------------
+    # Decision API used by the Driving State Machine
+    # -----------------------------------------------------
+
+    def should_lift(self, vehicle: VehicleState) -> bool:
+        return vehicle.speed_x > 0.90 * self.current_plan.target_speed
+
+    def should_brake(self, vehicle: VehicleState) -> bool:
+        return vehicle.speed_x > self.current_plan.target_speed
+
+    def should_trail_brake(self, vehicle: VehicleState) -> bool:
+        return (
+            self.current_plan.brake_intensity > 0.20
+            and vehicle.speed_x > self.current_plan.target_speed * 0.75
+        )
+
+    def should_turn_in(self, vehicle: VehicleState) -> bool:
+        return abs(vehicle.track_pos - self.current_plan.target_track_pos) < 0.20
+
+    def at_apex(self, vehicle: VehicleState) -> bool:
+        return abs(vehicle.track_pos - self.current_plan.apex) < 0.15
+
+    def should_apply_throttle(self, vehicle: VehicleState) -> bool:
+        return vehicle.speed_x <= self.current_plan.target_speed
+
+    def corner_exit_ready(self, vehicle: VehicleState) -> bool:
+        return abs(vehicle.track_pos - self.current_plan.exit_point) < 0.15
+
+    def full_throttle_ready(self, vehicle: VehicleState) -> bool:
+        return (
+            abs(vehicle.angle) < 0.05
+            and abs(vehicle.track_pos) < 0.30
+        )
+
+    def recovery_complete(self, vehicle: VehicleState) -> bool:
+        return (
+            abs(vehicle.track_pos) < 0.50
+            and abs(vehicle.angle) < 0.20
+        )
+
+    def race_finished(self, vehicle: VehicleState) -> bool:
+        return False
+
     def plan(
         self,
         road: RoadGeometry,
@@ -125,7 +168,7 @@ class Planner:
         turn_in_point = max(8.0, brake_point * 0.45)
         trail_brake = brake_intensity * (0.55 if abs(signed_curvature) > 0.08 else 0.15)
 
-        return DrivingPlan(
+        self.current_plan = DrivingPlan(
             target_speed=target_speed,
             target_gear=target_gear,
             steering_gain=steering_gain,
@@ -138,3 +181,6 @@ class Planner:
             target_track_pos=max(-0.8, min(0.8, target_track_pos)),
             trail_brake=max(0.0, min(1.0, trail_brake)),
         )
+
+        return self.current_plan
+           

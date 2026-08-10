@@ -8,6 +8,8 @@ from .control_command import ControlCommand
 from .corner_classifier import CornerClassifier
 from .planner import Planner, DrivingPlan
 from .diagnostics import DEBUG, print_warnings, validate_sensor_frame
+from .state_machine import DrivingStateMachine
+from .driving_state import DrivingState
 
 
 class RacingController:
@@ -23,6 +25,8 @@ class RacingController:
         self.vehicle_perception = VehiclePerception()
         self.corner_classifier = CornerClassifier()
         self.planner = Planner()
+        self.state_machine = DrivingStateMachine()
+        self.current_state = DrivingState.START
         self.previous_steering = 0.0
         self.previous_brake = 0.0
         self.previous_speed_error = 0.0
@@ -67,12 +71,22 @@ class RacingController:
             vehicle=vehicle,
             corner=corner,
          )
+         self.current_state = self.state_machine.update(
+            vehicle_state=vehicle,
+            planner=self.planner,
+         )
+         if DEBUG:
+             print(
+                 f"[FSM STATE] {self.current_state.name} "
+                 f"(time_in_state={self.state_machine.time_in_state})"
+             )
 
          command = self._create_control_command(
-            road=road,
-            vehicle=vehicle,
-            plan=plan,
-         )
+                road=road,
+                vehicle=vehicle,
+                plan=plan,
+                state=self.current_state,
+        )
 
          self.last_telemetry_context = {
             "frame": self.frame,
@@ -99,6 +113,7 @@ class RacingController:
         road: RoadGeometry,
         vehicle: VehicleState,
         plan: DrivingPlan,
+        state: DrivingState,
     ) -> ControlCommand:
         """
         Convert a high-level DrivingPlan into actual car commands.
@@ -112,7 +127,46 @@ class RacingController:
         acceleration, brake = self._calculate_speed_control(
             vehicle=vehicle,
             plan=plan,
+            state=state,
         )
+
+        # FSM driving-phase filter. Steering remains planner/controller driven;
+        # the FSM only constrains longitudinal behavior for now.
+        if state in (DrivingState.START, DrivingState.FULL_THROTTLE):
+            brake = 0.0
+            acceleration = max(acceleration, min(1.0, plan.acceleration_limit))
+
+        elif state == DrivingState.LIFT:
+            acceleration = min(acceleration, 0.15)
+            brake = 0.0
+
+        elif state in (DrivingState.BRAKING, DrivingState.TRAIL_BRAKE):
+            acceleration = 0.0
+            brake = max(brake, plan.brake_intensity)
+
+        elif state == DrivingState.TURN_IN:
+            acceleration = 0.0
+            brake = max(brake, plan.trail_brake)
+
+        elif state == DrivingState.APEX:
+            acceleration = min(acceleration, 0.50)
+            brake = min(brake, 0.15)
+
+        elif state == DrivingState.THROTTLE_APPLICATION:
+            acceleration = max(acceleration, min(0.50, plan.acceleration_limit))
+            brake = 0.0
+
+        elif state == DrivingState.CORNER_EXIT:
+            acceleration = max(acceleration, min(0.70, plan.acceleration_limit))
+            brake = 0.0
+
+        elif state == DrivingState.RECOVER:
+            # Recovery is handled by _recovery_command below.
+            pass
+
+        elif state in (DrivingState.PIT, DrivingState.FINISHED):
+            acceleration = 0.0
+            brake = max(brake, 0.25)
 
         recovery_command = self._recovery_command(road=road, vehicle=vehicle)
         if recovery_command is not None:
@@ -130,16 +184,19 @@ class RacingController:
 
         if DEBUG:
             print(
-                f"[GEAR] Speed={vehicle.speed_x:.1f} "
+                f"[GEAR] State={state.name} "
+                f"Speed={vehicle.speed_x:.1f} "
                 f"RPM={vehicle.rpm:.0f} "
                 f"Observed={vehicle.gear} "
                 f"Calculated={gear} "
                 f"Target={getattr(plan, 'target_gear', 'N/A')}"
             )
             print(
-                f"[CONTROL] Throttle={acceleration:.2f} "
+                f"[CONTROL] State={state.name} "
+                f"Throttle={acceleration:.2f} "
                 f"Brake={brake:.2f} "
-                f"Gear={gear}"
+                f"Gear={gear} "
+                f"Steer={steering:.3f}"
             )
         return ControlCommand(
             steering=steering,
@@ -179,7 +236,8 @@ class RacingController:
         self,
         vehicle: VehicleState,
         plan: DrivingPlan,
-    ) -> tuple[float, float]:
+        state: DrivingState,
+     ) -> tuple[float, float]:
         """
         Calculate throttle and brake from current speed and target speed.
         """
