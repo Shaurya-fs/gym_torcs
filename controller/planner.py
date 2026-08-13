@@ -29,6 +29,9 @@ class Planner:
     vehicle state, and classified corner.
     """
 
+    def __init__(self):
+        self.current_plan = DrivingPlan()
+
     # Target Speeds (km/h)
     STRAIGHT_SPEED = 180.0
     GENTLE_SPEED = 130.0
@@ -90,15 +93,18 @@ class Planner:
         return abs(vehicle.track_pos - self.current_plan.exit_point) < 0.15
 
     def full_throttle_ready(self, vehicle: VehicleState) -> bool:
+        plan = self.current_plan
+        if plan.brake_intensity > 0.12 and vehicle.speed_x > plan.target_speed * 0.88:
+            return False
         return (
-            abs(vehicle.angle) < 0.05
+            abs(vehicle.steering_angle) < 0.05
             and abs(vehicle.track_pos) < 0.30
         )
 
     def recovery_complete(self, vehicle: VehicleState) -> bool:
         return (
             abs(vehicle.track_pos) < 0.50
-            and abs(vehicle.angle) < 0.20
+            and abs(vehicle.steering_angle) < 0.20
         )
 
     def race_finished(self, vehicle: VehicleState) -> bool:

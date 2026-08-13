@@ -156,6 +156,8 @@ class TorcsEnv:
                 action_torcs['gear'] = 6
             """
 
+        self._trace_command_flow(u, this_action, action_torcs)
+
         # Save the privious full-obs from torcs for the reward calculation
         obs_pre = copy.deepcopy(client.S.d)
         print_warnings(validate_command(action_torcs, "packet.pre_send"))
@@ -283,6 +285,29 @@ class TorcsEnv:
 
         return torcs_action
 
+    def _trace_command_flow(self, u, this_action, action_torcs):
+        telemetry_context = getattr(u, "telemetry_context", {})
+        frame = telemetry_context.get("frame", self.time_step)
+        if frame % 20 != 0:
+            return
+
+        ai_action = telemetry_context.get("ai_action", {})
+        command = telemetry_context.get("command", {})
+        driving_context = telemetry_context.get("driving_context", {})
+        print(
+            "[COMMAND TRACE] "
+            f"frame={frame} state={driving_context.get('fsm_state', '')} "
+            f"AI={ai_action.get('longitudinal', '')}/{ai_action.get('gear', '')} "
+            f"FINAL=steer:{command.get('steering', 0.0):.3f} "
+            f"throttle:{command.get('acceleration', 0.0):.3f} "
+            f"brake:{command.get('brake', 0.0):.3f} gear:{command.get('gear', 0)} "
+            f"AGENT=[{u[0]:.3f}, {u[1]:.3f}, {u[2]:.3f}, {int(u[3]) if len(u) > 3 else 'NA'}] "
+            f"TORCS=steer:{action_torcs.get('steer', 0.0):.3f} "
+            f"accel:{action_torcs.get('accel', 0.0):.3f} "
+            f"brake:{action_torcs.get('brake', 0.0):.3f} "
+            f"gear:{action_torcs.get('gear', 0)}"
+        )
+
 
     def obs_vision_to_image_rgb(self, obs_image_vec):
         image_vec =  obs_image_vec
@@ -400,6 +425,8 @@ class TorcsEnv:
         corner = context.get("corner", {})
         plan = context.get("plan", {})
         command = context.get("command", {})
+        driving_context = context.get("driving_context", {})
+        ai_action = context.get("ai_action", {})
         track = list(sensor.get("track", []))
         while len(track) < 19:
             track.append("")
@@ -411,6 +438,8 @@ class TorcsEnv:
             "corner_type", "road_visibility_m", "road_curvature_signed",
             "planner_target_speed_kmh", "planner_target_gear", "planner_steering_gain",
             "planner_target_track_pos", "planner_brake_point_m",
+            "fsm_state", "fsm_time_in_state", "ai_longitudinal_action", "ai_gear_action",
+            "ai_reason", "ai_speed_error", "ai_vehicle_stability",
             "controller_steering", "controller_throttle", "controller_brake", "controller_gear",
             "recovery_active",
             "packet_steer", "packet_accel", "packet_brake", "packet_gear", "packet_meta",
@@ -441,6 +470,13 @@ class TorcsEnv:
             "planner_steering_gain": plan.get("steering_gain", 0.0),
             "planner_target_track_pos": plan.get("target_track_pos", 0.0),
             "planner_brake_point_m": plan.get("brake_point", 0.0),
+            "fsm_state": driving_context.get("fsm_state", ""),
+            "fsm_time_in_state": driving_context.get("time_in_state", 0),
+            "ai_longitudinal_action": ai_action.get("longitudinal", ""),
+            "ai_gear_action": ai_action.get("gear", ""),
+            "ai_reason": ai_action.get("reason", ""),
+            "ai_speed_error": driving_context.get("speed_error", 0.0),
+            "ai_vehicle_stability": driving_context.get("vehicle_stability", 0.0),
             "controller_steering": command.get("steering", 0.0),
             "controller_throttle": command.get("acceleration", 0.0),
             "controller_brake": command.get("brake", 0.0),

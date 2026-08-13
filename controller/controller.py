@@ -4,12 +4,14 @@ import math
 import os
 from dataclasses import asdict
 from typing import Optional
+from .ai_action import AIAction, GearAction, LongitudinalAction
+from .ai_brain import AIBrain
 from .control_command import ControlCommand
 from .corner_classifier import CornerClassifier
+from .driving_context import DrivingContext
 from .planner import Planner, DrivingPlan
 from .diagnostics import DEBUG, print_warnings, validate_sensor_frame
-from .state_machine import DrivingStateMachine
-from .driving_state import DrivingState
+from .driving_state import DrivingStateMachine, DrivingState
 
 
 class RacingController:
@@ -25,11 +27,17 @@ class RacingController:
         self.vehicle_perception = VehiclePerception()
         self.corner_classifier = CornerClassifier()
         self.planner = Planner()
+        self.ai_brain = AIBrain()
         self.state_machine = DrivingStateMachine()
         self.current_state = DrivingState.START
         self.previous_steering = 0.0
         self.previous_brake = 0.0
+        self.previous_throttle = 0.0
         self.previous_speed_error = 0.0
+        self.last_ai_action = AIAction()
+        self.last_ai_context: Optional[DrivingContext] = None
+        self.ai_decision_interval = 5
+        self.ai_action_frames = 0
         self.shift_cooldown = 0
         self.frame = 0
         self.stuck_frames = 0
@@ -75,6 +83,12 @@ class RacingController:
             vehicle_state=vehicle,
             planner=self.planner,
          )
+         driving_context = self._build_driving_context(
+            vehicle=vehicle,
+            plan=plan,
+            corner=corner,
+         )
+         ai_action = self._get_ai_action(driving_context)
          if DEBUG:
              print(
                  f"[FSM STATE] {self.current_state.name} "
@@ -86,7 +100,9 @@ class RacingController:
                 vehicle=vehicle,
                 plan=plan,
                 state=self.current_state,
+                ai_action=ai_action,
         )
+         self._maybe_print_ai_diagnostics(driving_context, ai_action, command)
 
          self.last_telemetry_context = {
             "frame": self.frame,
@@ -100,11 +116,18 @@ class RacingController:
                 "direction": corner.direction,
             },
             "plan": asdict(plan),
+            "driving_context": asdict(driving_context),
+            "ai_action": {
+                "longitudinal": ai_action.longitudinal.value,
+                "gear": ai_action.gear.value,
+                "reason": ai_action.reason,
+            },
             "command": asdict(command),
             "recovery_active": self.last_recovery_active,
          }
          self.previous_steering = command.steering
          self.previous_brake = command.brake
+         self.previous_throttle = command.acceleration
          self.frame += 1
          return command
 
@@ -114,6 +137,7 @@ class RacingController:
         vehicle: VehicleState,
         plan: DrivingPlan,
         state: DrivingState,
+        ai_action: Optional[AIAction] = None,
     ) -> ControlCommand:
         """
         Convert a high-level DrivingPlan into actual car commands.
@@ -136,7 +160,7 @@ class RacingController:
             brake = 0.0
             acceleration = max(acceleration, min(1.0, plan.acceleration_limit))
 
-        elif state == DrivingState.LIFT:
+        elif state == DrivingState.APPROACH_CORNER:
             acceleration = min(acceleration, 0.15)
             brake = 0.0
 
@@ -148,7 +172,7 @@ class RacingController:
             acceleration = 0.0
             brake = max(brake, plan.trail_brake)
 
-        elif state == DrivingState.APEX:
+        elif state == DrivingState.MID_CORNER:
             acceleration = min(acceleration, 0.50)
             brake = min(brake, 0.15)
 
@@ -164,9 +188,18 @@ class RacingController:
             # Recovery is handled by _recovery_command below.
             pass
 
-        elif state in (DrivingState.PIT, DrivingState.FINISHED):
+        elif state in (DrivingState.PIT, DrivingState.STOP):
             acceleration = 0.0
             brake = max(brake, 0.25)
+
+        if ai_action is not None:
+            acceleration, brake = self._apply_ai_longitudinal_action(
+                ai_action=ai_action,
+                state=state,
+                plan=plan,
+                acceleration=acceleration,
+                brake=brake,
+            )
 
         recovery_command = self._recovery_command(road=road, vehicle=vehicle)
         if recovery_command is not None:
@@ -181,6 +214,14 @@ class RacingController:
             plan=plan,
             brake=brake,
         )
+        if ai_action is not None:
+            gear = self._apply_ai_gear_action(
+                ai_action=ai_action,
+                gear=gear,
+                vehicle=vehicle,
+                plan=plan,
+                brake=brake,
+            )
 
         if DEBUG:
             print(
@@ -203,6 +244,177 @@ class RacingController:
             acceleration=acceleration,
             brake=brake,
             gear=gear,
+        )
+
+    def _build_driving_context(
+        self,
+        vehicle: VehicleState,
+        plan: DrivingPlan,
+        corner,
+    ) -> DrivingContext:
+        speed_error = plan.target_speed - vehicle.speed_x
+        distance_to_corner = plan.brake_point if plan.brake_intensity > 0.12 else plan.turn_in_point
+        distance_to_apex = abs(vehicle.track_pos - plan.apex)
+        stability = 1.0
+        stability -= min(0.35, abs(vehicle.speed_y) / 70.0)
+        stability -= min(0.35, vehicle.wheel_slip * 0.35)
+        stability -= min(0.30, abs(vehicle.steering_angle) / math.pi)
+
+        previous_action = self.last_ai_action.longitudinal.value if self.last_ai_action else "COAST"
+
+        return DrivingContext(
+            speed_x=vehicle.speed_x,
+            speed_y=vehicle.speed_y,
+            speed_z=vehicle.speed_z,
+            target_speed=plan.target_speed,
+            current_gear=vehicle.gear,
+            target_gear=plan.target_gear,
+            corner_type=corner.corner_type.value,
+            corner_severity=corner.severity,
+            corner_direction=corner.direction,
+            distance_to_corner=distance_to_corner,
+            distance_to_apex=distance_to_apex,
+            track_position=vehicle.track_pos,
+            steering_angle=vehicle.steering_angle,
+            wheel_slip=vehicle.wheel_slip,
+            vehicle_stability=max(0.0, min(1.0, stability)),
+            fsm_state=self.current_state.name,
+            previous_fsm_state=self.state_machine.previous_state.name,
+            previous_action=previous_action,
+            time_in_state=self.state_machine.time_in_state,
+            speed_error=speed_error,
+            previous_speed_error=self.previous_speed_error,
+            previous_throttle=self.previous_throttle,
+            previous_brake=self.previous_brake,
+            recovery_active=self.last_recovery_active,
+        )
+
+    def _get_ai_action(self, context: DrivingContext) -> AIAction:
+        should_decide = self.frame % self.ai_decision_interval == 0
+        if should_decide:
+            try:
+                next_action = self.ai_brain.decide(context)
+            except Exception as error:
+                if DEBUG:
+                    print(f"[AI] decision failed: {error}")
+                next_action = AIAction(LongitudinalAction.COAST, GearAction.GEAR_HOLD, "AI fallback")
+
+            if next_action.longitudinal == self.last_ai_action.longitudinal and next_action.gear == self.last_ai_action.gear:
+                self.ai_action_frames += self.ai_decision_interval
+            else:
+                self.ai_action_frames = 0
+            self.last_ai_action = next_action
+            self.last_ai_context = context
+
+        return self.last_ai_action
+
+    def _apply_ai_longitudinal_action(
+        self,
+        ai_action: AIAction,
+        state: DrivingState,
+        plan: DrivingPlan,
+        acceleration: float,
+        brake: float,
+    ) -> tuple[float, float]:
+        requested_acceleration, requested_brake = self._ai_longitudinal_values(ai_action.longitudinal)
+
+        if state in (DrivingState.START, DrivingState.FULL_THROTTLE):
+            acceleration = min(requested_acceleration, plan.acceleration_limit)
+            brake = min(requested_brake, 0.20)
+
+        elif state == DrivingState.APPROACH_CORNER:
+            acceleration = min(requested_acceleration, 0.40, plan.acceleration_limit)
+            brake = min(requested_brake, max(0.25, plan.brake_intensity * 0.50))
+
+        elif state in (DrivingState.BRAKING, DrivingState.TRAIL_BRAKE):
+            acceleration = 0.0
+            brake = max(brake, requested_brake, plan.brake_intensity)
+
+        elif state == DrivingState.TURN_IN:
+            acceleration = 0.0
+            brake = max(brake, min(requested_brake, max(0.20, plan.trail_brake)))
+
+        elif state == DrivingState.MID_CORNER:
+            acceleration = min(requested_acceleration, 0.50, plan.acceleration_limit)
+            brake = min(requested_brake, 0.15)
+
+        elif state == DrivingState.THROTTLE_APPLICATION:
+            acceleration = min(requested_acceleration, 0.80, plan.acceleration_limit)
+            brake = 0.0
+
+        elif state == DrivingState.CORNER_EXIT:
+            acceleration = min(requested_acceleration, plan.acceleration_limit)
+            brake = 0.0
+
+        elif state == DrivingState.RECOVER:
+            acceleration = 0.0
+            brake = max(brake, 0.20)
+
+        elif state in (DrivingState.PIT, DrivingState.STOP):
+            acceleration = 0.0
+            brake = max(brake, requested_brake, 0.25)
+
+        return max(0.0, min(1.0, acceleration)), max(0.0, min(1.0, brake))
+
+    def _ai_longitudinal_values(self, action: LongitudinalAction) -> tuple[float, float]:
+        throttle_values = {
+            LongitudinalAction.THROTTLE_25: 0.25,
+            LongitudinalAction.THROTTLE_40: 0.40,
+            LongitudinalAction.THROTTLE_60: 0.60,
+            LongitudinalAction.THROTTLE_80: 0.80,
+            LongitudinalAction.THROTTLE_100: 1.00,
+        }
+        brake_values = {
+            LongitudinalAction.BRAKE_20: 0.20,
+            LongitudinalAction.BRAKE_40: 0.40,
+            LongitudinalAction.BRAKE_60: 0.60,
+            LongitudinalAction.BRAKE_80: 0.80,
+            LongitudinalAction.BRAKE_100: 1.00,
+        }
+        if action in throttle_values:
+            return throttle_values[action], 0.0
+        if action in brake_values:
+            return 0.0, brake_values[action]
+        return 0.0, 0.0
+
+    def _apply_ai_gear_action(
+        self,
+        ai_action: AIAction,
+        gear: int,
+        vehicle: VehicleState,
+        plan: DrivingPlan,
+        brake: float,
+    ) -> int:
+        current_gear = max(1, min(6, int(vehicle.gear)))
+        target_gear = max(1, min(6, int(plan.target_gear)))
+
+        if vehicle.speed_x < 8.0:
+            return gear
+
+        if ai_action.gear == GearAction.GEAR_UP and brake < 0.05 and current_gear < target_gear:
+            return min(6, current_gear + 1)
+        if ai_action.gear == GearAction.GEAR_DOWN and current_gear > target_gear:
+            return max(1, current_gear - 1)
+        return gear
+
+    def _maybe_print_ai_diagnostics(
+        self,
+        context: DrivingContext,
+        ai_action: AIAction,
+        command: ControlCommand,
+    ) -> None:
+        if not DEBUG:
+            return
+        if self.frame % 25 != 0 and ai_action.longitudinal == self.last_ai_action.longitudinal:
+            return
+        print(
+            "[AI] "
+            f"state={context.fsm_state} "
+            f"speed={context.speed_x:.1f}/{context.target_speed:.1f} "
+            f"corner={context.corner_type} severity={context.corner_severity:.2f} "
+            f"action={ai_action.longitudinal.value}/{ai_action.gear.value} "
+            f"command=thr:{command.acceleration:.2f} brk:{command.brake:.2f} "
+            f"gear:{command.gear} steer:{command.steering:.3f}"
         )
 
     def _calculate_steering(
