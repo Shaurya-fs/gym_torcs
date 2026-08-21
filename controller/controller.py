@@ -213,15 +213,8 @@ class RacingController:
             vehicle=vehicle,
             plan=plan,
             brake=brake,
+            ai_gear_action=ai_action.gear if ai_action is not None else None,
         )
-        if ai_action is not None:
-            gear = self._apply_ai_gear_action(
-                ai_action=ai_action,
-                gear=gear,
-                vehicle=vehicle,
-                plan=plan,
-                brake=brake,
-            )
 
         if DEBUG:
             print(
@@ -385,17 +378,14 @@ class RacingController:
         plan: DrivingPlan,
         brake: float,
     ) -> int:
-        current_gear = max(1, min(6, int(vehicle.gear)))
-        target_gear = max(1, min(6, int(plan.target_gear)))
-
-        if vehicle.speed_x < 8.0:
-            return gear
-
-        if ai_action.gear == GearAction.GEAR_UP and brake < 0.05 and current_gear < target_gear:
-            return min(6, current_gear + 1)
-        if ai_action.gear == GearAction.GEAR_DOWN and current_gear > target_gear:
-            return max(1, current_gear - 1)
-        return gear
+        return self._calculate_gear(
+            rpm=vehicle.rpm,
+            current_gear=vehicle.gear,
+            vehicle=vehicle,
+            plan=plan,
+            brake=brake,
+            ai_gear_action=ai_action.gear if ai_action is not None else None,
+        )
 
     def _maybe_print_ai_diagnostics(
         self,
@@ -487,8 +477,9 @@ class RacingController:
         vehicle: VehicleState,
         plan: DrivingPlan,
         brake: float = 0.0,
+        ai_gear_action: Optional[GearAction] = None,
     ) -> int:
-        """Corner-aware automatic gear selection with hysteresis."""
+        """Corner-aware automatic gear selection with hysteresis and AI recommendation validation."""
 
         current_gear = max(1, min(6, int(current_gear)))
         speed = max(0.0, vehicle.speed_x)
@@ -512,13 +503,14 @@ class RacingController:
                 self.shift_cooldown = 8
                 return current_gear - 1
 
-        if current_gear > 1 and rpm < downshift_rpm[current_gear]:
-            if speed < max_speed_for_gear[current_gear - 1]:
-                self.shift_cooldown = 10
-                return current_gear - 1
+        if current_gear > 1:
+            if rpm < downshift_rpm[current_gear] or (ai_gear_action == GearAction.GEAR_DOWN and current_gear > target_gear):
+                if speed < max_speed_for_gear[current_gear - 1]:
+                    self.shift_cooldown = 10
+                    return current_gear - 1
 
         if current_gear < 6 and rpm > upshift_rpm[current_gear]:
-            if speed > min_speed_for_gear[current_gear + 1] and (current_gear < target_gear or brake < 0.05):
+            if speed > min_speed_for_gear[current_gear + 1] and (current_gear < target_gear or ai_gear_action == GearAction.GEAR_UP or brake < 0.05):
                 self.shift_cooldown = 10
                 return current_gear + 1
 
